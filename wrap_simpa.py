@@ -5,8 +5,9 @@
 named in a build log, for Mathlib `lean-pr-testing-*` adaptation work.
 
 For each `path/to/File.lean:LINE` site, walks backward from `LINE` past
-any `@[...]` attributes and `/-- ... -/` docstring above the enclosing
-decl, then inserts the wrapper. Bottom-up within each file; idempotent.
+any `@[...]` attributes, existing `set_option ... in` wrappers, and
+`/-- ... -/` docstring above the enclosing decl, then inserts the
+wrapper. Bottom-up within each file; idempotent.
 
 See README.md for the full reference.
 """
@@ -36,6 +37,11 @@ ATTR_START_RE = re.compile(r'^\s*@\[')
 ATTR_END_RE = re.compile(r'\]\s*$')
 DOCSTRING_START_RE = re.compile(r'^\s*/--')
 DOCSTRING_END_RE = re.compile(r'-/\s*$')
+# Existing `set_option NAME VALUE in` lines that already prefix a decl.
+# We must walk past these — Lean rejects an attribute followed by a
+# `set_option … in <decl>` (the new wrapper) where it expects the bare
+# decl that the attribute attaches to.
+SET_OPTION_IN_RE = re.compile(r'^\s*set_option\s+\S+\s+\S+\s+in\s*$')
 
 # Default --error-pattern: matches the simpa "After simplification"
 # type-mismatch errors that motivated this script.
@@ -148,12 +154,33 @@ def insert_wrapper(
               file=sys.stderr)
         return False
 
-    insert_idx = walk_back_docstring(lines, walk_back_attributes(lines, decl_idx))
-
-    # Idempotency: tight prefix match against the line above the insertion
-    # point, so the option name only counts when it's actually wrapping.
+    # Walk back through any layers of decoration above the decl: existing
+    # `set_option ... in` wrappers (which we must precede, not follow,
+    # because Lean rejects `@[…] set_option … in <decl>`), `@[…]`
+    # attribute blocks, and a `/-- … -/` docstring. Track whether we walk
+    # past our own wrapper at any point — that's what idempotency actually
+    # cares about, regardless of where in the decoration chain it sits.
     prefix = f'set_option {option} '
-    if insert_idx > 0 and lines[insert_idx - 1].lstrip().startswith(prefix):
+    already_wrapped = False
+    insert_idx = decl_idx
+    while True:
+        prev = insert_idx
+        insert_idx = walk_back_attributes(lines, insert_idx)
+        while insert_idx > 0 and SET_OPTION_IN_RE.match(lines[insert_idx - 1]):
+            if lines[insert_idx - 1].lstrip().startswith(prefix):
+                already_wrapped = True
+            insert_idx -= 1
+        if insert_idx == prev:
+            break
+    insert_idx = walk_back_docstring(lines, insert_idx)
+
+    # Idempotency: skip if the same option already wraps this decl,
+    # whether immediately above the insertion point or farther up in the
+    # decoration chain.
+    if not already_wrapped and insert_idx > 0 and \
+            lines[insert_idx - 1].lstrip().startswith(prefix):
+        already_wrapped = True
+    if already_wrapped:
         print(f"  SKIP (already wrapped): {file_path}:{fail_line} "
               f"(decl {decl_idx+1}, insert {insert_idx+1})")
         return False

@@ -51,7 +51,13 @@ For each site, walks backward from `LINE` and inserts
    `protected` / `private` / `noncomputable` / `nonrec`),
 2. any stack of `@[…]` attribute blocks above the decl (single-line,
    multi-line `@[to_additive /-- … -/]`, or several stacked blocks),
-3. any `/-- … -/` docstring above that.
+3. any existing `set_option … in` lines above that — interleaved with
+   further `@[…]` blocks if necessary — so the new wrapper always sits
+   at the outermost layer (Lean rejects `@[…] set_option … in <decl>`),
+4. any `/-- … -/` docstring above that.
+
+Idempotency notices our option anywhere in the decoration chain, not
+just on the line directly above the insertion point.
 
 Block comments (`/- … -/`) and line comments (`-- …`) directly above
 the decl are *not* walked past — they stay in place, with the wrapper
