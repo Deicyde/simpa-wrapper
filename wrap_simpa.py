@@ -27,8 +27,11 @@ DECL_RE = re.compile(
     # Optional declaration modifiers.
     r'(?:protected\s+|private\s+|noncomputable\s+|nonrec\s+)*'
     # The actual declaration keyword.
-    r'(?:theorem|lemma|def|instance|example)\b'
+    r'(?:theorem|lemma|def|abbrev|instance|example)\b'
 )
+# `/-` opens a block comment; `/--` opens a docstring. We need to
+# distinguish them when walking back from a line ending in `-/`.
+BLOCK_COMMENT_START_RE = re.compile(r'^\s*/-(?!-)')
 ATTR_START_RE = re.compile(r'^\s*@\[')
 ATTR_END_RE = re.compile(r'\]\s*$')
 DOCSTRING_START_RE = re.compile(r'^\s*/--')
@@ -57,37 +60,74 @@ def find_decl_start(lines: list[str], fail_idx: int) -> int:
     )
 
 
-def _walk_back_block(
-    lines: list[str], idx: int,
-    end_re: re.Pattern[str], start_re: re.Pattern[str],
-) -> int:
-    """If `lines[idx-1]` matches `end_re`, return the index of the line above
-    that matches `start_re` (the opener). Else (or if no opener is found)
-    return `idx` unchanged.
+_LINE_COMMENT_RE = re.compile(r'^\s*--')
+
+
+def _is_attribute_end(line: str) -> bool:
+    """True iff `line` plausibly closes an `@[...]` attribute block.
+
+    Just checking `endswith(']')` is too loose: line comments like
+    `-- see Note [lower instance priority]` end with `]` but are not
+    attributes. Reject anything that starts with `--` or contains tokens
+    (`:=`, `;`) that only appear inside declaration bodies, never inside
+    attributes.
     """
-    if idx <= 0 or not end_re.search(lines[idx - 1]):
-        return idx
-    for i in range(idx - 1, -1, -1):
-        if start_re.match(lines[i]):
-            return i
-    return idx  # malformed: end-marker without opener
+    if not ATTR_END_RE.search(line):
+        return False
+    if _LINE_COMMENT_RE.match(line):
+        return False
+    if ':=' in line or ';' in line:
+        return False
+    return True
 
 
 def walk_back_attributes(lines: list[str], idx: int) -> int:
     """Walk past every `@[...]` block immediately preceding `idx`.
 
     Handles single-line, multi-line (`@[to_additive /-- … -/]`), and
-    stacked attribute blocks in any combination. A blank line above an
-    attribute terminates the walk.
+    stacked attribute blocks in any combination. Blank lines, line
+    comments, and lines that obviously aren't attribute content
+    terminate the walk — important because Lean files routinely contain
+    comments like `-- see Note [lower instance priority]` whose trailing
+    `]` would otherwise look like an attribute closing.
     """
-    while (new := _walk_back_block(lines, idx, ATTR_END_RE, ATTR_START_RE)) < idx:
-        idx = new
+    while idx > 0 and _is_attribute_end(lines[idx - 1]):
+        # Walk back to the `@[...]` opener, but bail if we cross a blank
+        # line, a line comment, or the start of a declaration — none of
+        # those are attribute content, so the `]` we just saw was a
+        # false positive.
+        opener = -1
+        for j in range(idx - 1, -1, -1):
+            if ATTR_START_RE.match(lines[j]):
+                opener = j
+                break
+            if lines[j].strip() == '' or _LINE_COMMENT_RE.match(lines[j]):
+                break
+        if opener < 0:
+            return idx
+        idx = opener
     return idx
 
 
 def walk_back_docstring(lines: list[str], idx: int) -> int:
-    """Walk past one `/-- … -/` docstring block immediately preceding `idx`."""
-    return _walk_back_block(lines, idx, DOCSTRING_END_RE, DOCSTRING_START_RE)
+    """Walk past one `/-- … -/` docstring block immediately preceding `idx`.
+
+    Carefully distinguishes docstrings (`/-- … -/`, attached to the next
+    decl) from regular block comments (`/- … -/`, free-floating). Both
+    end in `-/`, but only docstrings should be moved past — a `/-` block
+    comment is unrelated commentary and the `set_option ... in` should
+    land *between* the comment and the decl (which keeps the comment
+    associated with whatever it was originally documenting).
+    """
+    if idx <= 0 or not DOCSTRING_END_RE.search(lines[idx - 1]):
+        return idx
+    for i in range(idx - 1, -1, -1):
+        if DOCSTRING_START_RE.match(lines[i]):
+            return i
+        if BLOCK_COMMENT_START_RE.match(lines[i]):
+            # It was a `/-`, not `/--`: leave the wrap below the comment.
+            return idx
+    return idx  # malformed: end-marker without opener
 
 
 # --- Wrap operation ---------------------------------------------------------
