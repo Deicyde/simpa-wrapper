@@ -30,6 +30,13 @@ Override the option being applied:
 python3 wrap_simpa.py --option backward.foo.bar --value false --from-log build.log
 ```
 
+Preview without writing — prints `WOULD WRAP: …` for every site it
+would touch:
+
+```bash
+python3 wrap_simpa.py --from-log build.log --dry-run
+```
+
 Override the failure-extraction regex (default matches the `simpa using …`
 "After simplification" type-mismatch errors):
 
@@ -46,11 +53,13 @@ no-op (idempotency check matches existing `set_option <name>` wrappers).
 For each `file:LINE` site it walks backward from the failing line:
 
 1. Find the start of the enclosing declaration (`theorem`, `lemma`, `def`,
-   `instance`, `example`, optionally preceded by `protected`, `private`,
-   `noncomputable`, `nonrec`).
-2. Walk past any `@[…]` attribute block above it (handles multi-line
-   attributes that close with `]` on a later line, common with
-   `@[to_additive /-- … -/]`).
+   `instance`, `example`, optionally preceded by inline `@[…]` attributes
+   and/or `protected`/`private`/`noncomputable`/`nonrec` modifiers — so
+   `@[simp] theorem foo := by simpa using h` is matched on its own line).
+2. Walk past *any number* of `@[…]` attribute blocks above it. Handles
+   multi-line attributes that close with `]` on a later line (common with
+   `@[to_additive /-- … -/]`) and stacked separate blocks
+   (`@[simp]` on one line, `@[to_additive]` on the next).
 3. Walk past any `/-- … -/` docstring block above that.
 4. Insert `set_option <name> <value> in\n` above the result.
 
@@ -75,6 +84,9 @@ keeping around.
   (rare in practice).
 - Top-of-decl line comments (`-- …`) end up *below* the inserted wrapper —
   ugly but harmless.
-- The idempotency check is keyed on the option name, so different options
-  stack cleanly, but the same option run twice in different invocations is
-  caught.
+- A blank line between stacked `@[…]` blocks stops the walk-back, so the
+  upper attribute attaches to the wrapper rather than the decl. Benign,
+  but Mathlib doesn't tend to space attributes apart anyway.
+- The idempotency check is keyed on the option name (tight prefix match
+  on the line above the insertion point), so different options stack
+  cleanly while the same option run twice is a no-op.
