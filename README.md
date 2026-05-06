@@ -69,6 +69,20 @@ bottom-up so line numbers stay stable. Re-runs are idempotent: a wrap
 is skipped if the line above the insertion point already starts with
 `set_option <name> `.
 
+## Tests
+
+```bash
+python3 -m unittest tests.test_wrap_simpa -v
+```
+
+The suite covers each bug class the script has been hardened against
+(inline `@[attr] decl`, line comments ending in `]`, `(attr := simp)`
+named-argument attributes, multi-paragraph `@[to_additive /-- … -/]`
+docstrings with blank lines, block-comment vs. docstring distinction,
+`abbrev` decls, existing `set_option … in` wrappers) plus full
+idempotency at every position our own wrapper might sit in the
+decoration chain.
+
 ## Caveats
 
 - A `section` / `namespace` opener between docstring and decl is not

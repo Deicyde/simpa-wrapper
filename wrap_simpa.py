@@ -74,16 +74,36 @@ def _is_attribute_end(line: str) -> bool:
 
     Just checking `endswith(']')` is too loose: line comments like
     `-- see Note [lower instance priority]` end with `]` but are not
-    attributes. Reject anything that starts with `--` or contains tokens
-    (`:=`, `;`) that only appear inside declaration bodies, never inside
-    attributes.
+    attributes. Reject `--`-comments and lines whose `:=` or `;` lies at
+    the *top level* (i.e. not inside any bracket pair) — those tokens
+    only appear at top level in declaration bodies, never in attributes.
+    Crucially, `@[to_additive (attr := simp)]` and similar named-argument
+    attributes contain `:=` inside parentheses, which is fine.
     """
     if not ATTR_END_RE.search(line):
         return False
     if _LINE_COMMENT_RE.match(line):
         return False
-    if ':=' in line or ';' in line:
-        return False
+    # Attributes that begin on this line are unambiguous, regardless of
+    # what `:=`/`;` they contain inside brackets.
+    if line.lstrip().startswith('@['):
+        return True
+    # Otherwise, look for `:=` or `;` *outside* any bracketing, which
+    # would indicate this is a declaration body line ending in `]`.
+    depth = 0
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+        elif depth == 0:
+            if c == ';':
+                return False
+            if c == ':' and i + 1 < len(line) and line[i + 1] == '=':
+                return False
+        i += 1
     return True
 
 
@@ -98,16 +118,20 @@ def walk_back_attributes(lines: list[str], idx: int) -> int:
     `]` would otherwise look like an attribute closing.
     """
     while idx > 0 and _is_attribute_end(lines[idx - 1]):
-        # Walk back to the `@[...]` opener, but bail if we cross a blank
-        # line, a line comment, or the start of a declaration — none of
-        # those are attribute content, so the `]` we just saw was a
-        # false positive.
+        # Walk back to the `@[...]` opener. Multi-line attributes like
+        # `@[to_additive /-- multi-paragraph
+        # docstring with blank lines
+        # -/]` may contain blank lines (paragraph breaks inside the
+        # docstring). Bail only on `--` comments or `set_option … in`/
+        # decl-keyword lines, which can't appear inside an attribute.
         opener = -1
         for j in range(idx - 1, -1, -1):
             if ATTR_START_RE.match(lines[j]):
                 opener = j
                 break
-            if lines[j].strip() == '' or _LINE_COMMENT_RE.match(lines[j]):
+            if (_LINE_COMMENT_RE.match(lines[j]) or
+                    SET_OPTION_IN_RE.match(lines[j]) or
+                    DECL_RE.match(lines[j])):
                 break
         if opener < 0:
             return idx
