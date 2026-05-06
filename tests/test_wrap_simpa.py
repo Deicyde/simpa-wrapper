@@ -99,6 +99,37 @@ class WrapPositionTests(_FixtureCase):
         # Wrapper lands at the very top (before the @[to_additive line).
         self.assertEqual(self.path.read_text().splitlines()[0], WRAPPER)
 
+    def test_attribute_with_trailing_line_comment(self) -> None:
+        """Bug: `@[ext high] -- This should have higher precedence than X.`
+        is still recognised as ending an attribute despite the trailing
+        comment. `_strip_trailing_line_comment` handles it so ATTR_END_RE
+        sees the `]` after the comment is stripped.
+
+        Without this, the wrapper lands between `@[ext high] -- comment`
+        and the decl, which Lean rejects."""
+        self.write("""\
+            @[ext high] -- This should have higher precedence than `Foo.ext`.
+            theorem foo : True := by simpa using trivial
+        """)
+        run_wrap(self.path, [2])
+        body = self.path.read_text()
+        # Wrapper goes above the @[ext high] line, comment preserved.
+        self.assertEqual(body.splitlines()[0], WRAPPER)
+        self.assertIn('@[ext high] -- This should have higher precedence', body)
+
+    def test_attribute_close_with_string_containing_dashes(self) -> None:
+        """`--` inside a string literal in an attribute must not be
+        mistaken for a trailing line comment."""
+        self.write("""\
+            @[my_attr "value with -- in it"]
+            theorem foo : True := by simpa using trivial
+        """)
+        run_wrap(self.path, [2])
+        body = self.path.read_text()
+        # Wrapper at top, attribute line preserved verbatim with its embedded `--`.
+        self.assertEqual(body.splitlines()[0], WRAPPER)
+        self.assertIn('@[my_attr "value with -- in it"]\ntheorem foo', body)
+
     def test_attribute_with_named_args(self) -> None:
         """Bug #6: `@[reassoc (attr := simp)]` keeps `:=` inside parens."""
         self.write("""\
@@ -132,8 +163,14 @@ class WrapPositionTests(_FixtureCase):
         self.assertEqual(lines[1], WRAPPER)
 
     def test_line_comment_with_brackets_is_not_an_attribute(self) -> None:
-        """Bug #2: `-- see Note [lower instance priority]` ends in `]`
-        but is not an attribute closer."""
+        """Bug #2: `-- see Note [lower instance priority]` ends in `]` but
+        must not be mis-identified as an attribute close — that would walk
+        the wrapper past it onto the wrong (previous) decl.
+
+        The comment is itself walked past as transparent decoration (line
+        comments are whitespace to Lean), so the wrapper sits above it.
+        The crucial assertion is that `theorem prev` is *not* the one
+        getting wrapped."""
         self.write("""\
             @[simp] theorem prev := rfl
 
@@ -142,9 +179,9 @@ class WrapPositionTests(_FixtureCase):
         """)
         run_wrap(self.path, [4])
         body = self.path.read_text()
-        # Comment must stay where it was; wrapper goes between it and the decl.
-        self.assertIn('-- see Note [lower instance priority]\n'
-                      f'{WRAPPER}\n'
+        # Wrapper goes above the comment; comment stays attached to `theorem foo`.
+        self.assertIn(f'{WRAPPER}\n'
+                      '-- see Note [lower instance priority]\n'
                       'theorem foo', body)
         # `theorem prev` must not have been touched.
         self.assertNotIn(f'{WRAPPER}\n@[simp] theorem prev', body)

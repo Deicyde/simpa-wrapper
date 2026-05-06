@@ -79,6 +79,33 @@ def find_decl_start(lines: list[str], fail_idx: int) -> int:
 _LINE_COMMENT_RE = re.compile(r'^\s*--')
 
 
+def _strip_trailing_line_comment(line: str) -> str:
+    """Strip a trailing `-- ...` line comment, if any. Conservatively skips
+    when `--` lies inside a string or bracket pair to avoid false positives."""
+    depth = 0
+    in_string = False
+    escape = False
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if escape:
+            escape = False
+        elif c == '\\':
+            escape = True
+        elif c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c in '([{':
+                depth += 1
+            elif c in ')]}':
+                depth -= 1
+            elif depth == 0 and c == '-' and i + 1 < len(line) and line[i + 1] == '-':
+                prefix = line[:i].rstrip()
+                return prefix + '\n' if line.endswith('\n') else prefix
+        i += 1
+    return line
+
+
 def _is_attribute_end(line: str) -> bool:
     """True iff `line` plausibly closes an `@[...]` attribute block.
 
@@ -89,21 +116,26 @@ def _is_attribute_end(line: str) -> bool:
     only appear at top level in declaration bodies, never in attributes.
     Crucially, `@[to_additive (attr := simp)]` and similar named-argument
     attributes contain `:=` inside parentheses, which is fine.
+
+    Also strips a trailing `-- comment` so that
+    `@[ext high] -- This should have higher precedence than X.` is still
+    recognised as ending an attribute.
     """
-    if not ATTR_END_RE.search(line):
-        return False
     if _LINE_COMMENT_RE.match(line):
+        return False
+    stripped = _strip_trailing_line_comment(line)
+    if not ATTR_END_RE.search(stripped):
         return False
     # Attributes that begin on this line are unambiguous, regardless of
     # what `:=`/`;` they contain inside brackets.
-    if line.lstrip().startswith('@['):
+    if stripped.lstrip().startswith('@['):
         return True
     # Otherwise, look for `:=` or `;` *outside* any bracketing, which
     # would indicate this is a declaration body line ending in `]`.
     depth = 0
     i = 0
-    while i < len(line):
-        c = line[i]
+    while i < len(stripped):
+        c = stripped[i]
         if c in '([{':
             depth += 1
         elif c in ')]}':
@@ -111,7 +143,7 @@ def _is_attribute_end(line: str) -> bool:
         elif depth == 0:
             if c == ';':
                 return False
-            if c == ':' and i + 1 < len(line) and line[i + 1] == '=':
+            if c == ':' and i + 1 < len(stripped) and stripped[i + 1] == '=':
                 return False
         i += 1
     return True
@@ -220,17 +252,36 @@ def insert_wrapper(
     # the existing wrapper sits.
     prefix = f'set_option {option} '
     already_wrapped = False
-    insert_idx = walk_back_modifiers(lines, decl_idx)
+    insert_idx = decl_idx
+    # Iterate until no further movement. Within each iteration, walk past
+    # every kind of decoration that can sit above a decl in any order,
+    # because Mathlib mixes them freely:
+    #   - `set_option … in` wrappers
+    #   - lone-line decl modifiers (`noncomputable`, `private`, …)
+    #   - `@[…]` attribute blocks (single- and multi-line)
+    #   - `/-- … -/` docstrings (single- and multi-line)
+    #   - `--` line comments (transparent to Lean)
+    # Stop only at blank lines (decl-boundary) or content that doesn't fit
+    # any of the above. The wrapper has to sit above the *entire* chain
+    # because Lean rejects e.g. `/-- doc -/ set_option … in <decl>`.
     while True:
         prev = insert_idx
         insert_idx = walk_back_attributes(lines, insert_idx)
-        while insert_idx > 0 and SET_OPTION_IN_RE.match(lines[insert_idx - 1]):
-            if lines[insert_idx - 1].lstrip().startswith(prefix):
-                already_wrapped = True
-            insert_idx -= 1
+        insert_idx = walk_back_modifiers(lines, insert_idx)
+        while insert_idx > 0:
+            above = lines[insert_idx - 1]
+            if SET_OPTION_IN_RE.match(above):
+                if above.lstrip().startswith(prefix):
+                    already_wrapped = True
+                insert_idx -= 1
+                continue
+            if _LINE_COMMENT_RE.match(above):
+                insert_idx -= 1
+                continue
+            break
+        insert_idx = walk_back_docstring(lines, insert_idx)
         if insert_idx == prev:
             break
-    insert_idx = walk_back_docstring(lines, insert_idx)
 
     # Idempotency: skip if the same option already wraps this decl,
     # whether immediately above the insertion point or farther up in the

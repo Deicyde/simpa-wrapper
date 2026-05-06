@@ -63,10 +63,14 @@ For each site, walks backward from `LINE` and inserts
 Idempotency notices our option anywhere in the decoration chain, not
 just on the line directly above the insertion point.
 
-Block comments (`/- … -/`) and line comments (`-- …`) directly above
-the decl are *not* walked past — they stay in place, with the wrapper
-landing between them and the decl. This keeps unrelated commentary
-attached to wherever it originally was.
+Block comments (`/- … -/`) directly above the decl stay in place —
+the wrapper lands between them and the decl, since a free-floating
+`/- … -/` may be commenting on something other than the decl below.
+
+Line comments (`-- …`) are walked past, since Lean treats them as
+whitespace; the wrapper goes above them. A trailing line comment on
+an attribute close (`@[ext high] -- comment`) is also handled — the
+attribute is still recognised as ending the line.
 
 Files are edited in place. Sites in the same file are applied
 bottom-up so line numbers stay stable. Re-runs are idempotent: a wrap
