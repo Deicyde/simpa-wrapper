@@ -68,3 +68,7 @@ is skipped if the line above the insertion point already starts with
   (benign).
 - The idempotency check is keyed on the option name, so different
   options stack cleanly but the same option run twice is a no-op.
+
+## License
+
+MIT. © 2026 Jack McCarthy. See [LICENSE](LICENSE).

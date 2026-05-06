@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Jack McCarthy
 """Bulk-insert `set_option <name> <value> in` above Lean 4 declarations
 named in a build log, for Mathlib `lean-pr-testing-*` adaptation work.
 
