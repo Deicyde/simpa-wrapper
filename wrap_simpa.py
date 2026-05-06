@@ -5,9 +5,10 @@
 named in a build log, for Mathlib `lean-pr-testing-*` adaptation work.
 
 For each `path/to/File.lean:LINE` site, walks backward from `LINE` past
-any `@[...]` attributes, existing `set_option ... in` wrappers, and
-`/-- ... -/` docstring above the enclosing decl, then inserts the
-wrapper. Bottom-up within each file; idempotent.
+any lone-line decl modifiers (`noncomputable`, `private`, …), `@[...]`
+attributes, existing `set_option ... in` wrappers, and `/-- ... -/`
+docstring above the enclosing decl, then inserts the wrapper. Bottom-up
+within each file; idempotent.
 
 See README.md for the full reference.
 """
@@ -42,6 +43,15 @@ DOCSTRING_END_RE = re.compile(r'-/\s*$')
 # `set_option … in <decl>` (the new wrapper) where it expects the bare
 # decl that the attribute attaches to.
 SET_OPTION_IN_RE = re.compile(r'^\s*set_option\s+\S+\s+\S+\s+in\s*$')
+# Decl modifiers may sit on their own line(s) above the keyword:
+#     noncomputable
+#     def foo := …
+# Lean rejects `noncomputable set_option ... in def foo`, so the wrapper
+# has to be inserted *above* any such modifier line, not between it and
+# the decl. Matches one or more whitespace-separated modifier tokens with
+# nothing else on the line.
+_MOD_TOKEN = r'(?:protected|private|noncomputable|nonrec)'
+MODIFIER_RE = re.compile(rf'^\s*{_MOD_TOKEN}(?:\s+{_MOD_TOKEN})*\s*$')
 
 # Default --error-pattern: matches the simpa "After simplification"
 # type-mismatch errors that motivated this script.
@@ -139,6 +149,23 @@ def walk_back_attributes(lines: list[str], idx: int) -> int:
     return idx
 
 
+def walk_back_modifiers(lines: list[str], idx: int) -> int:
+    """Walk past lone-line `noncomputable` / `private` / `protected` /
+    `nonrec` modifiers immediately preceding `idx`.
+
+    Modifiers between attributes and the decl keyword can sit on their
+    own line:
+        @[simp]
+        noncomputable
+        def foo := …
+    Lean rejects `noncomputable set_option ... in def foo`, so the
+    wrapper has to live above the modifier, not between it and the decl.
+    """
+    while idx > 0 and MODIFIER_RE.match(lines[idx - 1]):
+        idx -= 1
+    return idx
+
+
 def walk_back_docstring(lines: list[str], idx: int) -> int:
     """Walk past one `/-- … -/` docstring block immediately preceding `idx`.
 
@@ -178,15 +205,22 @@ def insert_wrapper(
               file=sys.stderr)
         return False
 
-    # Walk back through any layers of decoration above the decl: existing
-    # `set_option ... in` wrappers (which we must precede, not follow,
-    # because Lean rejects `@[…] set_option … in <decl>`), `@[…]`
-    # attribute blocks, and a `/-- … -/` docstring. Track whether we walk
-    # past our own wrapper at any point — that's what idempotency actually
-    # cares about, regardless of where in the decoration chain it sits.
+    # Walk back through every layer of decoration above the decl, in order
+    # from innermost to outermost:
+    #
+    #   1. lone-line decl modifiers (`noncomputable\n`, `private\n`, …) —
+    #      Lean rejects `<modifier> set_option … in <decl>`,
+    #   2. existing `set_option … in` wrappers and `@[…]` attribute blocks,
+    #      interleaved (Lean rejects `@[…] set_option … in <decl>`, so the
+    #      new wrapper must sit at the outermost layer),
+    #   3. a `/-- … -/` docstring above all of that.
+    #
+    # Track whether we walk past our own wrapper at any point — that's what
+    # idempotency actually cares about, regardless of where in the chain
+    # the existing wrapper sits.
     prefix = f'set_option {option} '
     already_wrapped = False
-    insert_idx = decl_idx
+    insert_idx = walk_back_modifiers(lines, decl_idx)
     while True:
         prev = insert_idx
         insert_idx = walk_back_attributes(lines, insert_idx)

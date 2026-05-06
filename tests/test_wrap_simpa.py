@@ -158,6 +158,67 @@ class WrapPositionTests(_FixtureCase):
         run_wrap(self.path, [2])
         self.assertIn(f'{WRAPPER}\nexample :', self.path.read_text())
 
+    def test_lone_line_modifier(self) -> None:
+        """Bug #8: `noncomputable\\ndef foo` — wrapper must sit above the
+        modifier, not between it and the decl. Lean rejects
+        `noncomputable set_option ... in def foo`.
+        """
+        self.write("""\
+            noncomputable
+            def foo : Nat := by simpa using 0
+        """)
+        run_wrap(self.path, [2])
+        self.assertEqual(self.path.read_text().splitlines()[0], WRAPPER)
+
+    def test_stacked_lone_line_modifiers(self) -> None:
+        """Multiple modifiers on consecutive lines, all walked past."""
+        self.write("""\
+            private
+            noncomputable
+            def foo : Nat := by simpa using 0
+        """)
+        run_wrap(self.path, [3])
+        self.assertEqual(self.path.read_text().splitlines()[0], WRAPPER)
+
+    def test_multi_token_modifier_line(self) -> None:
+        """Several modifiers on a single line (`private noncomputable`)
+        as one lone-line block above the decl."""
+        self.write("""\
+            private noncomputable
+            def foo : Nat := by simpa using 0
+        """)
+        run_wrap(self.path, [2])
+        self.assertEqual(self.path.read_text().splitlines()[0], WRAPPER)
+
+    def test_modifier_between_attribute_and_decl(self) -> None:
+        """Attribute, then lone modifier, then decl: wrapper above attr."""
+        self.write("""\
+            @[simp]
+            noncomputable
+            def foo : Nat := by simpa using 0
+        """)
+        run_wrap(self.path, [3])
+        body = self.path.read_text()
+        self.assertEqual(body.splitlines()[0], WRAPPER)
+        self.assertIn('@[simp]\nnoncomputable\ndef foo', body)
+
+    def test_modifier_with_existing_set_option(self) -> None:
+        """Existing `set_option ... in` above a lone modifier: new wrapper
+        goes at the very top, original chain preserved."""
+        self.write("""\
+            set_option some.other false in
+            noncomputable
+            def foo : Nat := by simpa using 0
+        """)
+        run_wrap(self.path, [3])
+        body = self.path.read_text()
+        self.assertEqual(body.splitlines()[0], WRAPPER)
+        self.assertIn(
+            f'{WRAPPER}\n'
+            'set_option some.other false in\n'
+            'noncomputable\n'
+            'def foo', body)
+
     def test_existing_set_option_wrapper_above_attribute(self) -> None:
         """Bug #5: an existing `set_option … in` between an attribute
         and the decl must be walked past, so the new wrapper lands at
@@ -234,6 +295,16 @@ class IdempotencyTests(_FixtureCase):
             theorem foo : True := by simpa using trivial
         """)
         self.assertIdempotent([2])
+
+    def test_our_wrapper_above_modifier(self) -> None:
+        """Bug #8 idempotency: re-running on a decl whose wrapper sits
+        above a lone-line `noncomputable` must SKIP."""
+        self.write(f"""\
+            {WRAPPER}
+            noncomputable
+            def foo : Nat := by simpa using 0
+        """)
+        self.assertIdempotent([3])
 
 
 class CLIBehaviourTests(_FixtureCase):

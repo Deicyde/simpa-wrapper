@@ -46,15 +46,19 @@ For each site, walks backward from `LINE` and inserts
 `set_option <name> <value> in\n` above:
 
 1. the enclosing decl (`theorem` / `lemma` / `def` / `abbrev` /
-   `instance` / `example`, optionally preceded by inline `@[…]`
-   attributes and/or
+   `instance` / `example`, optionally preceded on the same line by
+   inline `@[…]` attributes and/or
    `protected` / `private` / `noncomputable` / `nonrec`),
-2. any stack of `@[…]` attribute blocks above the decl (single-line,
+2. any lone-line decl modifiers (`noncomputable\n`, `private\n`, …)
+   immediately above the decl keyword — Lean rejects
+   `noncomputable set_option … in <decl>`, so the wrapper has to sit
+   above them too,
+3. any stack of `@[…]` attribute blocks above the decl (single-line,
    multi-line `@[to_additive /-- … -/]`, or several stacked blocks),
-3. any existing `set_option … in` lines above that — interleaved with
+4. any existing `set_option … in` lines above that — interleaved with
    further `@[…]` blocks if necessary — so the new wrapper always sits
    at the outermost layer (Lean rejects `@[…] set_option … in <decl>`),
-4. any `/-- … -/` docstring above that.
+5. any `/-- … -/` docstring above all of that.
 
 Idempotency notices our option anywhere in the decoration chain, not
 just on the line directly above the insertion point.
